@@ -5,15 +5,12 @@ unpackage/
 cache/
 *.cache
 .DS_Store
-*.next.vue
-*.phase3.vue
-*.clean.vue
-*.fixed.vue
-*.ascii.vue
-*.next.js
-*.phase3.js
-*.clean.js
-*.next.json
-*.__new.vue
-*.__new.json
+
+# Backup / stage snapshot naming patterns
+*.next.*
+*.phase3.*
+*.clean.*
+*.fixed.*
+*.ascii.*
+*.__new.*
 test_patch.txt
