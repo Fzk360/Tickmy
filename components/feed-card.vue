@@ -3,13 +3,6 @@
 		<view class="feed-noise" />
 
 		<view class="feed-top-actions">
-			<button
-				v-if="isLandscapeVideo && !landscapeFullscreen"
-				class="feed-top-pill feed-top-pill--icon tm-glass"
-				@tap.stop="toggleLandscapeFullscreen"
-			>
-				<view class="icon-expand" />
-			</button>
 			<button class="feed-top-pill tm-glass" @tap="cycleSpeed">
 				<text class="feed-top-pill__icon">倍速</text>
 				<text class="feed-top-pill__text">{{ playbackRateLabel }}</text>
@@ -22,7 +15,15 @@
 			</button>
 		</view>
 
-		<view class="feed-surface" @tap="togglePlay" @longpress="zoomed = !zoomed">
+		<view
+			:id="surfaceId"
+			class="feed-surface"
+			@tap="togglePlay"
+			@touchstart="handleSurfaceTouchStart"
+			@touchmove="handleSurfaceTouchMove"
+			@touchend="handleSurfaceTouchEnd"
+			@touchcancel="handleSurfaceTouchCancel"
+		>
 			<video
 				v-if="shouldRenderVideo"
 				:id="playerId"
@@ -38,8 +39,11 @@
 				:show-mute-btn="false"
 				:show-fullscreen-btn="false"
 				:enable-progress-gesture="false"
-				:page-gesture="true"
-				:playback-rate="playbackRate"
+				:vslide-gesture="false"
+				:vslide-gesture-in-fullscreen="false"
+				:page-gesture="false"
+				:enable-play-gesture="false"
+				:playback-rate="effectivePlaybackRate"
 				object-fit="cover"
 				@loadedmetadata="handleLoadedMetadata"
 				@rendererror="handleRenderError"
@@ -64,6 +68,17 @@
 			<text class="feed-preview__badge">{{ statusText }}</text>
 			<text v-if="showPreviewTitle" class="feed-preview__title">{{ video.preview }}</text>
 			<text v-if="showPreviewTip" class="feed-preview__tip">{{ previewTip }}</text>
+			<view
+				v-if="gestureHud.visible"
+				class="gesture-hud tm-glass"
+				:class="{ 'gesture-hud--fullscreen': landscapeFullscreen }"
+			>
+				<text class="gesture-hud__label">{{ gestureHud.label }}</text>
+				<text class="gesture-hud__value">{{ gestureHud.value }}</text>
+				<view v-if="gestureHud.ratio >= 0" class="gesture-hud__bar">
+					<view class="gesture-hud__fill" :style="{ width: `${gestureHud.ratio * 100}%` }" />
+				</view>
+			</view>
 		</view>
 
 		<view v-if="showDanmaku" class="danmaku-layer" :class="{ 'danmaku-layer--fullscreen': landscapeFullscreen }">
@@ -93,7 +108,10 @@
 			<view
 				:id="progressTrackId"
 				class="feed-progress__track"
-				:class="{ 'feed-progress__track--disabled': true }"
+				@touchstart.stop="handleProgressTouchStart"
+				@touchmove.stop.prevent="handleProgressTouchMove"
+				@touchend.stop="handleProgressTouchEnd"
+				@touchcancel.stop="handleProgressTouchCancel"
 			>
 				<view class="feed-progress__fill" :style="{ width: `${progressRatio * 100}%` }" />
 				<view class="feed-progress__thumb" :style="{ left: `${progressRatio * 100}%` }" />
@@ -119,7 +137,7 @@
 
 			<view class="action-group">
 				<button class="action-icon tm-glass" @tap.stop="handleToggleFavorite">
-					<view class="icon-bookmark" :class="{ 'icon-bookmark--active': decoratedVideo.isFavorited }" />
+					<text class="icon-favorite-star" :class="{ 'icon-favorite-star--active': decoratedVideo.isFavorited }">&#9733;</text>
 				</button>
 				<text class="action-text">{{ decoratedVideo.isFavorited ? '已收藏' : '收藏' }}</text>
 			</view>
@@ -132,8 +150,13 @@
 			@close="showComments = false"
 			@send="handleSendComment"
 		/>
-		<button v-if="landscapeFullscreen" class="feed-fullscreen-exit tm-glass" @tap.stop="toggleLandscapeFullscreen">
-			<view class="icon-collapse" />
+		<button
+			v-if="isLandscapeVideo && props.isCurrent"
+			class="feed-fullscreen-toggle tm-glass"
+			:class="{ 'feed-fullscreen-toggle--active': landscapeFullscreen }"
+			@tap.stop="toggleLandscapeFullscreen"
+		>
+			<view :class="landscapeFullscreen ? 'icon-collapse' : 'icon-expand'" />
 		</button>
 	</view>
 </template>
@@ -169,6 +192,25 @@ const QUICK_SWIPE_SECONDS = 3
 
 const showComments = ref(false)
 const zoomed = ref(false)
+const pinchScale = ref(1)
+const pinchActive = ref(false)
+const pinchStartDistance = ref(0)
+const pinchStartScale = ref(1)
+const suppressTapUntil = ref(0)
+const surfaceRect = ref({ left: 0, top: 0, width: 0, height: 0 })
+const surfaceTouchStartPoint = ref({ x: 0, y: 0 })
+const temporaryPlaybackRate = ref(0)
+const holdSpeedActive = ref(false)
+const fullscreenGestureMode = ref('')
+const screenBrightness = ref(0.5)
+const fullscreenBrightnessStart = ref(0.5)
+const fullscreenBrightnessOrigin = ref(null)
+const gestureHud = ref({
+	visible: false,
+	label: '',
+	value: '',
+	ratio: -1
+})
 const landscapeFullscreen = ref(false)
 const playing = ref(false)
 const currentTime = ref(0)
@@ -179,9 +221,15 @@ const mediaDuration = ref(Number(props.video.duration) || 0)
 const mediaWidth = ref(Number(props.video.width) || 0)
 const mediaHeight = ref(Number(props.video.height) || 0)
 const progressTrackRect = ref({ left: 0, width: 0 })
+const seeking = ref(false)
+const seekPreviewTime = ref(0)
+const shouldResumeAfterSeek = ref(false)
 let videoContext = null
+let holdSpeedTimer = null
+let gestureHudTimer = null
 const progressTrackId = `progress_${props.video.id}`
 const playerId = `player_${props.video.id}`
+const surfaceId = `surface_${props.video.id}`
 
 const hasPlayableSource = computed(() => !!props.video.localPath)
 const shouldRenderVideo = computed(() => hasPlayableSource.value && props.isCurrent && !playerError.value)
@@ -189,7 +237,8 @@ const previewImage = computed(() => props.video.coverPath || '')
 const showPreviewImage = computed(() => !!previewImage.value)
 const showDanmaku = computed(() => store.state.settings.showDanmaku !== false)
 const playbackRate = computed(() => Number(store.state.settings.defaultSpeed || 1))
-const playbackRateLabel = computed(() => `${playbackRate.value}x`)
+const effectivePlaybackRate = computed(() => temporaryPlaybackRate.value || playbackRate.value)
+const playbackRateLabel = computed(() => `${effectivePlaybackRate.value}x`)
 const decoratedVideo = computed(() => store.decorateVideo(props.video))
 const commentList = computed(() => store.getCommentsByVideo(props.video.id))
 const danmakuList = computed(() => store.getDanmakusByVideo(props.video.id))
@@ -206,8 +255,8 @@ const showPreviewTitle = computed(() => !hasPlayableSource.value)
 const showPreviewTip = computed(() => !hasPlayableSource.value)
 const isLandscapeVideo = computed(() => mediaWidth.value > mediaHeight.value && mediaHeight.value > 0)
 const sliderMax = computed(() => Math.max(0.1, mediaDuration.value || 0, Number(props.video.duration) || 0, currentTime.value || 0))
-const sliderValue = computed(() => Math.min(sliderMax.value, Math.max(0, currentTime.value || 0)))
-const mediaScale = computed(() => (zoomed.value ? 1.06 : 1))
+const sliderValue = computed(() => Math.min(sliderMax.value, Math.max(0, seeking.value ? seekPreviewTime.value : currentTime.value || 0)))
+const mediaScale = computed(() => clampScale((zoomed.value ? 1.06 : 1) * pinchScale.value))
 const videoSurfaceStyle = computed(() => {
 	if (!landscapeFullscreen.value) {
 		return {
@@ -245,7 +294,7 @@ const progressRatio = computed(() => {
 	return Math.min(1, Math.max(0, sliderValue.value / sliderMax.value))
 })
 const progressDisplayTime = computed(() => {
-	const current = formatProgressTime(currentTime.value)
+	const current = formatProgressTime(sliderValue.value)
 	const total = formatProgressTime(sliderMax.value)
 	return `${current} / ${total}`
 })
@@ -295,11 +344,36 @@ function measureProgressTrack() {
 	})
 }
 
+function measureSurfaceRect() {
+	return new Promise((resolve) => {
+		if (!instance || !instance.proxy) {
+			resolve(surfaceRect.value)
+			return
+		}
+
+		uni.createSelectorQuery()
+			.in(instance.proxy)
+			.select(`#${surfaceId}`)
+			.boundingClientRect((rect) => {
+				if (rect && rect.width) {
+					surfaceRect.value = {
+						left: rect.left,
+						top: rect.top,
+						width: rect.width,
+						height: rect.height
+					}
+				}
+				resolve(surfaceRect.value)
+			})
+			.exec()
+	})
+}
+
 function applyPlaybackRate() {
 	const context = ensureContext()
 	if (context && typeof context.playbackRate === 'function') {
 		try {
-			context.playbackRate(playbackRate.value)
+			context.playbackRate(effectivePlaybackRate.value)
 		} catch (error) {
 			// Ignore unsupported playback rate changes on older runtimes.
 		}
@@ -311,6 +385,273 @@ function formatProgressTime(value) {
 	const minutes = `${Math.floor(totalSeconds / 60)}`.padStart(2, '0')
 	const seconds = `${totalSeconds % 60}`.padStart(2, '0')
 	return `${minutes}:${seconds}`
+}
+
+function clampScale(value) {
+	return Math.min(3, Math.max(0.75, Number(value) || 1))
+}
+
+function getTouchDistance(event) {
+	const touches = (event && event.touches) || []
+	if (touches.length < 2) {
+		return 0
+	}
+
+	const [firstTouch, secondTouch] = touches
+	const deltaX = Number((firstTouch.pageX || firstTouch.clientX || 0) - (secondTouch.pageX || secondTouch.clientX || 0))
+	const deltaY = Number((firstTouch.pageY || firstTouch.clientY || 0) - (secondTouch.pageY || secondTouch.clientY || 0))
+	return Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+}
+
+function getSurfaceTouchPoint(event) {
+	const touch =
+		(event && event.touches && event.touches[0]) ||
+		(event && event.changedTouches && event.changedTouches[0]) ||
+		null
+	return {
+		x: Number(touch && (touch.clientX || touch.pageX) ? touch.clientX || touch.pageX : 0),
+		y: Number(touch && (touch.clientY || touch.pageY) ? touch.clientY || touch.pageY : 0)
+	}
+}
+
+function resetSurfaceScale() {
+	pinchScale.value = 1
+	pinchActive.value = false
+	pinchStartDistance.value = 0
+	pinchStartScale.value = 1
+	suppressTapUntil.value = 0
+}
+
+function clearHoldSpeedTimer() {
+	if (holdSpeedTimer) {
+		clearTimeout(holdSpeedTimer)
+		holdSpeedTimer = null
+	}
+}
+
+function clearGestureHudTimer() {
+	if (gestureHudTimer) {
+		clearTimeout(gestureHudTimer)
+		gestureHudTimer = null
+	}
+}
+
+function showGestureHud(label, value, ratio = -1, options = {}) {
+	clearGestureHudTimer()
+	gestureHud.value = {
+		visible: true,
+		label,
+		value,
+		ratio
+	}
+
+	if (options.persistent) {
+		return
+	}
+
+	gestureHudTimer = setTimeout(() => {
+		gestureHud.value = {
+			visible: false,
+			label: '',
+			value: '',
+			ratio: -1
+		}
+	}, options.duration || 600)
+}
+
+function hideGestureHud() {
+	clearGestureHudTimer()
+	gestureHud.value = {
+		visible: false,
+		label: '',
+		value: '',
+		ratio: -1
+	}
+}
+
+function stopHoldSpeedPlayback() {
+	clearHoldSpeedTimer()
+	if (!holdSpeedActive.value && !temporaryPlaybackRate.value) {
+		return
+	}
+
+	holdSpeedActive.value = false
+	temporaryPlaybackRate.value = 0
+	applyPlaybackRate()
+	hideGestureHud()
+}
+
+function clampUnit(value) {
+	return Math.min(1, Math.max(0, Number(value) || 0))
+}
+
+function resetFullscreenGestureState() {
+	fullscreenGestureMode.value = ''
+	hideGestureHud()
+}
+
+function getSurfaceTouchXRatio(pointX) {
+	if (!surfaceRect.value.width) {
+		return 0.5
+	}
+	return (pointX - surfaceRect.value.left) / surfaceRect.value.width
+}
+
+function getFullscreenSideRatio(point) {
+	if (landscapeFullscreen.value && surfaceRect.value.height) {
+		return (point.y - surfaceRect.value.top) / surfaceRect.value.height
+	}
+	return getSurfaceTouchXRatio(point.x)
+}
+
+function getRelativeVerticalDelta(point) {
+	if (landscapeFullscreen.value) {
+		return surfaceTouchStartPoint.value.x - point.x
+	}
+	return point.y - surfaceTouchStartPoint.value.y
+}
+
+function getRelativeHorizontalDelta(point) {
+	if (landscapeFullscreen.value) {
+		return point.y - surfaceTouchStartPoint.value.y
+	}
+	return point.x - surfaceTouchStartPoint.value.x
+}
+
+function updateBrightnessHud(value) {
+	const nextValue = clampUnit(value)
+	showGestureHud('\u4eae\u5ea6', `${Math.round(nextValue * 100)}%`, nextValue, { persistent: true })
+}
+
+function updateVolumeUnsupportedHud() {
+	showGestureHud(
+		'\u97f3\u91cf',
+		'\u5f53\u524d\u5fae\u4fe1\u5c0f\u7a0b\u5e8f\u4e0d\u652f\u6301\u7a0b\u5e8f\u5185\u8c03\u8282\u7cfb\u7edf\u97f3\u91cf',
+		-1,
+		{ persistent: true }
+	)
+}
+
+async function ensureScreenBrightness() {
+	try {
+		const result = await new Promise((resolve, reject) => {
+			uni.getScreenBrightness({
+				success: resolve,
+				fail: reject
+			})
+		})
+		const nextValue = clampUnit(result && result.value)
+		screenBrightness.value = nextValue
+		fullscreenBrightnessOrigin.value = nextValue
+		return nextValue
+	} catch (error) {
+		return screenBrightness.value
+	}
+}
+
+async function applyScreenBrightness(value) {
+	const nextValue = clampUnit(value)
+	try {
+		await new Promise((resolve, reject) => {
+			uni.setScreenBrightness({
+				value: nextValue,
+				success: resolve,
+				fail: reject
+			})
+		})
+		screenBrightness.value = nextValue
+		updateBrightnessHud(nextValue)
+	} catch (error) {
+		showGestureHud('\u4eae\u5ea6', '\u5f53\u524d\u73af\u5883\u4e0d\u652f\u6301\u4eae\u5ea6\u8c03\u8282', -1, { duration: 1000 })
+	}
+}
+
+async function restoreScreenBrightness() {
+	if (fullscreenBrightnessOrigin.value == null) {
+		return
+	}
+
+	try {
+		await new Promise((resolve, reject) => {
+			uni.setScreenBrightness({
+				value: clampUnit(fullscreenBrightnessOrigin.value),
+				success: resolve,
+				fail: reject
+			})
+		})
+		screenBrightness.value = clampUnit(fullscreenBrightnessOrigin.value)
+	} catch (error) {
+		// Ignore restore failures on unsupported runtimes.
+	}
+}
+
+function getClientXFromTouchEvent(event) {
+	const touch =
+		(event && event.touches && event.touches[0]) ||
+		(event && event.changedTouches && event.changedTouches[0]) ||
+		null
+	return Number(touch && touch.clientX ? touch.clientX : 0)
+}
+
+function getSeekTimeByClientX(clientX) {
+	const rect = progressTrackRect.value
+	if (!rect.width) {
+		return 0
+	}
+
+	const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+	return Number((sliderMax.value * ratio).toFixed(2))
+}
+
+function beginSeekSession() {
+	if (!hasPlayableSource.value) {
+		return false
+	}
+
+	shouldResumeAfterSeek.value = playing.value
+	if (playing.value) {
+		pausePlayback()
+	}
+	seeking.value = true
+	return true
+}
+
+async function updateSeekPreviewFromEvent(event) {
+	await measureProgressTrack()
+	const clientX = getClientXFromTouchEvent(event)
+	if (!clientX) {
+		return
+	}
+
+	seekPreviewTime.value = getSeekTimeByClientX(clientX)
+}
+
+function commitSeek() {
+	if (!seeking.value) {
+		return
+	}
+
+	const nextTime = Math.min(sliderMax.value, Math.max(0, seekPreviewTime.value || 0))
+	currentTime.value = nextTime
+	const context = ensureContext()
+	if (context && typeof context.seek === 'function') {
+		context.seek(nextTime)
+	}
+
+	seeking.value = false
+	if (shouldResumeAfterSeek.value) {
+		playPlayback()
+	}
+	shouldResumeAfterSeek.value = false
+}
+
+function cancelSeek() {
+	seeking.value = false
+	seekPreviewTime.value = currentTime.value
+	if (shouldResumeAfterSeek.value) {
+		playPlayback()
+	}
+	shouldResumeAfterSeek.value = false
 }
 
 function flushDwell(options = {}) {
@@ -389,6 +730,9 @@ function togglePlay() {
 	if (!hasPlayableSource.value) {
 		return
 	}
+	if (Date.now() < suppressTapUntil.value) {
+		return
+	}
 
 	if (playing.value) {
 		pausePlayback()
@@ -403,10 +747,181 @@ function toggleLandscapeFullscreen() {
 	}
 
 	landscapeFullscreen.value = !landscapeFullscreen.value
+	if (landscapeFullscreen.value) {
+		measureSurfaceRect()
+		ensureScreenBrightness()
+	} else {
+		stopHoldSpeedPlayback()
+		resetFullscreenGestureState()
+		restoreScreenBrightness()
+	}
 	uni.$emit('tikmy:landscape-fullscreen', {
 		active: landscapeFullscreen.value,
 		videoId: props.video.id
 	})
+}
+
+function handleSurfaceTouchStart(event) {
+	const distance = getTouchDistance(event)
+	if (distance) {
+		clearHoldSpeedTimer()
+		stopHoldSpeedPlayback()
+		resetFullscreenGestureState()
+		pinchActive.value = true
+		pinchStartDistance.value = distance
+		pinchStartScale.value = pinchScale.value
+		suppressTapUntil.value = Date.now() + 300
+		return
+	}
+
+	const touches = (event && event.touches) || []
+	if (touches.length !== 1 || !hasPlayableSource.value || !props.isCurrent) {
+		return
+	}
+
+	const point = getSurfaceTouchPoint(event)
+	surfaceTouchStartPoint.value = point
+	fullscreenGestureMode.value = ''
+	clearHoldSpeedTimer()
+	holdSpeedTimer = setTimeout(async () => {
+		await measureSurfaceRect()
+		const rect = surfaceRect.value
+		if (!rect.width || pinchActive.value || seeking.value || fullscreenGestureMode.value) {
+			return
+		}
+
+		const sideRatio = getFullscreenSideRatio(point)
+		if (sideRatio <= 0.35 || sideRatio >= 0.65) {
+			holdSpeedActive.value = true
+			temporaryPlaybackRate.value = 2
+			suppressTapUntil.value = Date.now() + 300
+			applyPlaybackRate()
+			showGestureHud('\u500d\u901f\u64ad\u653e', '2x', 1, { persistent: true })
+		}
+	}, 220)
+}
+
+function handleSurfaceTouchMove(event) {
+	if (pinchActive.value) {
+		const distance = getTouchDistance(event)
+		if (!distance || !pinchStartDistance.value) {
+			return
+		}
+
+		pinchScale.value = clampScale((distance / pinchStartDistance.value) * pinchStartScale.value)
+		suppressTapUntil.value = Date.now() + 300
+		return
+	}
+
+	const touches = (event && event.touches) || []
+	if (touches.length !== 1) {
+		return
+	}
+
+	const point = getSurfaceTouchPoint(event)
+	const deltaX = Math.abs(point.x - surfaceTouchStartPoint.value.x)
+	const deltaY = point.y - surfaceTouchStartPoint.value.y
+	const relativeVerticalDelta = getRelativeVerticalDelta(point)
+	const relativeHorizontalDelta = getRelativeHorizontalDelta(point)
+	const absRelativeVerticalDelta = Math.abs(relativeVerticalDelta)
+	const absRelativeHorizontalDelta = Math.abs(relativeHorizontalDelta)
+	const sideRatio = getFullscreenSideRatio(surfaceTouchStartPoint.value)
+
+	if (landscapeFullscreen.value) {
+		if (!fullscreenGestureMode.value && absRelativeVerticalDelta > 18 && absRelativeVerticalDelta > absRelativeHorizontalDelta) {
+			clearHoldSpeedTimer()
+			stopHoldSpeedPlayback()
+			suppressTapUntil.value = Date.now() + 300
+			if (sideRatio <= 0.35) {
+				fullscreenGestureMode.value = 'brightness'
+				fullscreenBrightnessStart.value = screenBrightness.value
+				updateBrightnessHud(screenBrightness.value)
+			} else if (sideRatio >= 0.65) {
+				fullscreenGestureMode.value = 'volume'
+				updateVolumeUnsupportedHud()
+			}
+		}
+
+		if (fullscreenGestureMode.value === 'brightness') {
+			const nextBrightness = clampUnit(fullscreenBrightnessStart.value - relativeVerticalDelta / 360)
+			applyScreenBrightness(nextBrightness)
+			return
+		}
+
+		if (fullscreenGestureMode.value === 'volume') {
+			updateVolumeUnsupportedHud()
+			return
+		}
+	}
+
+	if (deltaX > 14 || absDeltaY > 14) {
+		clearHoldSpeedTimer()
+		if (holdSpeedActive.value && (deltaX > 24 || absDeltaY > 24)) {
+			stopHoldSpeedPlayback()
+		}
+	}
+}
+
+function handleSurfaceTouchEnd(event) {
+	const remainingTouches = (event && event.touches) || []
+	if (remainingTouches.length >= 2) {
+		const distance = getTouchDistance(event)
+		if (distance) {
+			pinchStartDistance.value = distance
+			pinchStartScale.value = pinchScale.value
+		}
+		return
+	}
+
+	clearHoldSpeedTimer()
+	if (holdSpeedActive.value) {
+		stopHoldSpeedPlayback()
+		suppressTapUntil.value = Date.now() + 300
+	}
+	if (fullscreenGestureMode.value) {
+		suppressTapUntil.value = Date.now() + 300
+		resetFullscreenGestureState()
+	}
+
+	if (pinchActive.value) {
+		pinchActive.value = false
+		pinchStartDistance.value = 0
+		pinchStartScale.value = pinchScale.value
+		suppressTapUntil.value = Date.now() + 300
+	}
+}
+
+function handleSurfaceTouchCancel() {
+	clearHoldSpeedTimer()
+	stopHoldSpeedPlayback()
+	resetFullscreenGestureState()
+	pinchActive.value = false
+	pinchStartDistance.value = 0
+	pinchStartScale.value = pinchScale.value
+}
+
+async function handleProgressTouchStart(event) {
+	if (!beginSeekSession()) {
+		return
+	}
+
+	await updateSeekPreviewFromEvent(event)
+}
+
+async function handleProgressTouchMove(event) {
+	if (!seeking.value) {
+		return
+	}
+
+	await updateSeekPreviewFromEvent(event)
+}
+
+function handleProgressTouchEnd() {
+	commitSeek()
+}
+
+function handleProgressTouchCancel() {
+	cancelSeek()
 }
 
 function handlePlay() {
@@ -504,6 +1019,11 @@ watch(
 	(active) => {
 		if (!active) {
 			landscapeFullscreen.value = false
+			stopHoldSpeedPlayback()
+			resetFullscreenGestureState()
+			resetSurfaceScale()
+			zoomed.value = false
+			restoreScreenBrightness()
 			uni.$emit('tikmy:landscape-fullscreen', {
 				active: false,
 				videoId: props.video.id
@@ -527,6 +1047,11 @@ watch(
 	(isCurrent) => {
 		if (!isCurrent) {
 			landscapeFullscreen.value = false
+			stopHoldSpeedPlayback()
+			resetFullscreenGestureState()
+			resetSurfaceScale()
+			zoomed.value = false
+			restoreScreenBrightness()
 			uni.$emit('tikmy:landscape-fullscreen', {
 				active: false,
 				videoId: props.video.id
@@ -541,6 +1066,7 @@ watch(
 				videoContext = null
 				ensureContext()
 				measureProgressTrack()
+				measureSurfaceRect()
 			})
 		}
 	}
@@ -556,6 +1082,7 @@ watch(
 		if (isCurrent) {
 			await nextTick()
 			measureProgressTrack()
+			measureSurfaceRect()
 		}
 	}
 )
@@ -567,14 +1094,21 @@ onMounted(() => {
 			ensureContext()
 		}
 		measureProgressTrack()
+		measureSurfaceRect()
 		setTimeout(() => {
 			measureProgressTrack()
+			measureSurfaceRect()
 		}, 200)
 	})
 })
 
 onUnmounted(() => {
 	landscapeFullscreen.value = false
+	stopHoldSpeedPlayback()
+	resetFullscreenGestureState()
+	resetSurfaceScale()
+	zoomed.value = false
+	restoreScreenBrightness()
 	uni.$emit('tikmy:landscape-fullscreen', {
 		active: false,
 		videoId: props.video.id
@@ -609,7 +1143,7 @@ onUnmounted(() => {
 
 .feed-top-actions {
 	position: absolute;
-	top: 180rpx;
+	top: 292rpx;
 	right: 24rpx;
 	z-index: 10;
 	display: flex;
@@ -715,6 +1249,54 @@ onUnmounted(() => {
 	margin-top: 20rpx;
 	font-size: 22rpx;
 	color: rgba(255, 255, 255, 0.56);
+}
+
+.gesture-hud {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	z-index: 18;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 14rpx;
+	width: 320rpx;
+	padding: 28rpx 24rpx;
+	border-radius: 28rpx;
+	transform: translate(-50%, -50%);
+	text-align: center;
+}
+
+.gesture-hud--fullscreen {
+	transform: translate(-50%, -50%) rotate(90deg);
+	transform-origin: center center;
+}
+
+.gesture-hud__label {
+	font-size: 24rpx;
+	font-weight: 700;
+	letter-spacing: 2rpx;
+	color: rgba(255, 255, 255, 0.7);
+}
+
+.gesture-hud__value {
+	font-size: 28rpx;
+	font-weight: 700;
+	line-height: 1.5;
+}
+
+.gesture-hud__bar {
+	width: 100%;
+	height: 10rpx;
+	border-radius: 999rpx;
+	background: rgba(255, 255, 255, 0.18);
+	overflow: hidden;
+}
+
+.gesture-hud__fill {
+	height: 100%;
+	border-radius: inherit;
+	background: #ffffff;
 }
 
 .danmaku-layer {
@@ -914,9 +1496,9 @@ onUnmounted(() => {
 	transform: translate(-50%, -50%);
 }
 
-.feed-fullscreen-exit {
+.feed-fullscreen-toggle {
 	position: fixed;
-	top: calc(44rpx + env(safe-area-inset-top));
+	top: calc(180rpx + env(safe-area-inset-top));
 	right: 24rpx;
 	z-index: 170;
 	display: flex;
@@ -925,6 +1507,10 @@ onUnmounted(() => {
 	width: 84rpx;
 	height: 84rpx;
 	border-radius: 42rpx;
+}
+
+.feed-fullscreen-toggle--active {
+	background: rgba(0, 0, 0, 0.42);
 }
 
 .icon-expand,
@@ -1015,35 +1601,21 @@ onUnmounted(() => {
 	transform: rotate(-25deg);
 }
 
-.icon-bookmark {
-	position: relative;
-	width: 28rpx;
-	height: 38rpx;
-	border: 3rpx solid #ffffff;
-	border-bottom: none;
-	border-radius: 10rpx 10rpx 0 0;
+.icon-favorite-star {
+	font-size: 42rpx;
+	line-height: 1;
+	color: #ffffff;
+	transform: translateY(-1rpx) scale(1.06);
+	text-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.32);
+	transition: transform 0.18s ease, color 0.18s ease, text-shadow 0.18s ease;
 }
 
-.icon-bookmark::after {
-	content: '';
-	position: absolute;
-	left: -3rpx;
-	right: -3rpx;
-	bottom: -3rpx;
-	margin: auto;
-	width: 0;
-	height: 0;
-	border-left: 17rpx solid transparent;
-	border-right: 17rpx solid transparent;
-	border-top: 16rpx solid #ffffff;
-}
-
-.icon-bookmark--active {
-	border-color: #fb7185;
-}
-
-.icon-bookmark--active::after {
-	border-top-color: #fb7185;
+.icon-favorite-star--active {
+	color: #ffd54a;
+	transform: translateY(-1rpx) scale(1.12);
+	text-shadow:
+		0 0 8rpx rgba(255, 213, 74, 0.5),
+		0 6rpx 16rpx rgba(0, 0, 0, 0.28);
 }
 
 .action-text {

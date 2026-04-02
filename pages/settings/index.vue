@@ -1,7 +1,9 @@
 <template>
 	<view class="tm-page settings-page">
 		<view class="settings-header">
-			<button class="back-button" @tap="goBack">&lt;</button>
+			<button class="back-button" @tap="goBack" aria-label="返回">
+				<view class="back-icon" />
+			</button>
 			<text class="settings-title">设置与本地数据</text>
 		</view>
 
@@ -186,8 +188,24 @@ onShow(async () => {
 	height: 72rpx;
 	border-radius: 36rpx;
 	background: rgba(255, 255, 255, 0.06);
-	font-size: 32rpx;
-	line-height: 1;
+}
+
+.back-icon {
+	position: relative;
+	width: 24rpx;
+	height: 24rpx;
+}
+
+.back-icon::before {
+	content: '';
+	position: absolute;
+	left: 5rpx;
+	top: 50%;
+	width: 12rpx;
+	height: 12rpx;
+	border-left: 3rpx solid rgba(255, 255, 255, 0.92);
+	border-bottom: 3rpx solid rgba(255, 255, 255, 0.92);
+	transform: translateY(-50%) rotate(45deg);
 }
 
 .settings-title {
@@ -313,6 +331,9 @@ onShow(async () => {
 }
 
 .settings-chip {
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	min-width: 112rpx;
 	height: 68rpx;
 	padding: 0 22rpx;
@@ -321,6 +342,8 @@ onShow(async () => {
 	border: 1rpx solid rgba(255, 255, 255, 0.08);
 	font-size: 24rpx;
 	font-weight: 700;
+	line-height: 1.2;
+	text-align: center;
 	color: #ffffff;
 }
 
@@ -386,6 +409,9 @@ onShow(async () => {
 }
 
 .danger-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
 	height: 92rpx;
 	border-radius: 28rpx;
 	background: rgba(255, 255, 255, 0.06);
@@ -393,6 +419,8 @@ onShow(async () => {
 	color: #fb7185;
 	font-size: 28rpx;
 	font-weight: 700;
+	line-height: 1.2;
+	text-align: center;
 }
 
 .storage-note {
