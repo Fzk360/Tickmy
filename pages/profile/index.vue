@@ -363,53 +363,53 @@ onShow(async () => {
 .stats-grid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));
-	gap: 18rpx;
-	margin-top: 34rpx;
+	gap: 14rpx;
+	margin-top: 28rpx;
 }
 
 .stat-card {
 	display: flex;
 	flex-direction: column;
-	gap: 10rpx;
-	padding: 24rpx;
-	border-radius: 28rpx;
+	gap: 8rpx;
+	padding: 20rpx;
+	border-radius: 24rpx;
 }
 
 .stat-card__value {
-	font-size: 36rpx;
+	font-size: 32rpx;
 	font-weight: 700;
 }
 
 .stat-card__label {
-	font-size: 22rpx;
+	font-size: 20rpx;
 	color: rgba(255, 255, 255, 0.56);
 }
 
 .focus-card {
 	display: flex;
 	flex-direction: column;
-	gap: 12rpx;
-	margin-top: 18rpx;
-	padding: 28rpx;
-	border-radius: 30rpx;
+	gap: 10rpx;
+	margin-top: 14rpx;
+	padding: 22rpx;
+	border-radius: 26rpx;
 	background:
 		radial-gradient(circle at top right, rgba(251, 113, 133, 0.16), transparent 32%),
 		rgba(255, 255, 255, 0.06);
 }
 
 .focus-card__eyebrow {
-	font-size: 20rpx;
+	font-size: 18rpx;
 	letter-spacing: 2rpx;
 	color: rgba(255, 255, 255, 0.5);
 }
 
 .focus-card__title {
-	font-size: 34rpx;
+	font-size: 30rpx;
 	font-weight: 700;
 }
 
 .focus-card__copy {
-	font-size: 22rpx;
+	font-size: 20rpx;
 	line-height: 1.6;
 	color: rgba(255, 255, 255, 0.64);
 }
